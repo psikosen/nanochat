@@ -13,7 +13,8 @@ dependencies = [
     "regex>=2025.9.1",
     "tiktoken>=0.11.0",
     "tokenizers>=0.22.0",
-    "torch>=2.8.0",
+    "torch>=2.8.0 ; platform_system != 'Darwin' or platform_machine != 'arm64'",
+    "torch>=2.5.1 ; platform_system == 'Darwin' and platform_machine == 'arm64'",
     "uvicorn>=0.36.0",
     "wandb>=0.21.3",
 ]
@@ -26,6 +27,11 @@ build-backend = "maturin"
 [tool.uv.sources]
 torch = [
     { index = "pytorch-cu128" },
+]
+
+[project.optional-dependencies]
+mlx = [
+    "mlx>=0.16.0",
 ]
 
 [[tool.uv.index]]
