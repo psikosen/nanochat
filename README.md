@@ -89,6 +89,10 @@ And a bit more about computing environments that will run nanochat:
 - If your GPU(s) have less than 80GB, you'll have to tune some of the hyperparameters or you will OOM / run out of VRAM. Look for `--device_batch_size` in the scripts and reduce it until things fit. E.g. from 32 (default) to 16, 8, 4, 2, or even 1. Less than that you'll have to know a bit more what you're doing and get more creative.
 - Most of the code is fairly vanilla PyTorch so it should run on anything that supports that - xpu, mps, or etc, but I haven't implemented this out of the box so it might take a bit of tinkering.
 
+## Apple Silicon (MLX) Port
+
+Experimental support for running nanochat inference on Apple Silicon (M1–M4) via [MLX](https://github.com/ml-explore/mlx) is available. Convert any PyTorch checkpoint with `python -m scripts.convert_to_mlx` and chat locally using `python -m scripts.mlx_chat`. Detailed instructions live in [mlx/README.md](mlx/README.md). Training remains PyTorch-only for now.
+
 ## Questions
 
 nanochat is designed to be short and sweet. One big advantage of this is that we can package up all of the files together and copy paste them to your favorite LLM to ask arbitrary questions. As an example, I like to package up the repo using the [files-to-prompt](https://github.com/simonw/files-to-prompt) utility like so:
