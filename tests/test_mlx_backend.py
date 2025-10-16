@@ -1,5 +1,6 @@
-import numpy as np
 import pytest
+
+np = pytest.importorskip("numpy")
 
 from nanochat.mlx_backend import GPTConfig
 from nanochat.mlx_backend.checkpoint import convert_torch_state_dict, save_mlx_weights, load_mlx_weights

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Iterable, List, Optional, Tuple
 
 import numpy as np
+from nanochat.lora_config import LoRAConfig
 
 try:  # pragma: no cover - import guarded for non-mac environments
     import mlx.core as mx
@@ -27,6 +28,7 @@ class GPTConfig:
     n_head: int = 6
     n_kv_head: int = 6
     n_embd: int = 768
+    lora: Optional[LoRAConfig] = None
 
 
 def _require_mlx():
@@ -217,6 +219,9 @@ else:
         def __init__(self, config: GPTConfig):
             _require_mlx()
             super().__init__()
+            self.lora_config = config.lora
+            if self.lora_config and self.lora_config.is_enabled():
+                raise NotImplementedError("LoRA adapters are not yet supported in the MLX backend")
             self.config = config
             self.wte = nn.Embedding(config.vocab_size, config.n_embd)
             self.h: List[Block] = [Block(config, i) for i in range(config.n_layer)]

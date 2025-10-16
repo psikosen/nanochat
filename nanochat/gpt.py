@@ -14,6 +14,7 @@ Notable features:
 import math
 from functools import partial
 from dataclasses import dataclass
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -22,6 +23,16 @@ import torch.nn.functional as F
 from nanochat.common import get_dist_info, print0
 from nanochat.muon import Muon, DistMuon
 from nanochat.adamw import DistAdamW
+from nanochat.lora import (
+    freeze_non_lora_parameters,
+    gather_lora_parameters,
+    inject_lora_adapters,
+    lora_state_dict,
+    load_lora_state_dict,
+    merge_lora_weights,
+    unmerge_lora_weights,
+)
+from nanochat.lora_config import LoRAConfig
 
 @dataclass
 class GPTConfig:
@@ -31,6 +42,7 @@ class GPTConfig:
     n_head: int = 6 # number of query heads
     n_kv_head: int = 6 # number of key/value heads (MQA)
     n_embd: int = 768
+    lora: Optional[LoRAConfig] = None
 
 
 def norm(x):
@@ -171,6 +183,9 @@ class GPT(nn.Module):
         self.register_buffer("sin", sin, persistent=False)
         # Cast the embeddings from fp32 to bf16: optim can tolerate it and it saves memory: both in the model and the activations
         self.transformer.wte.to(dtype=torch.bfloat16)
+        self.lora_config = config.lora
+        if self.lora_config and self.lora_config.is_enabled():
+            inject_lora_adapters(self, self.lora_config)
 
     def init_weights(self):
         self.apply(self._init_weights)
@@ -226,6 +241,27 @@ class GPT(nn.Module):
         return num_flops_per_token
 
     def setup_optimizers(self, unembedding_lr=0.004, embedding_lr=0.2, matrix_lr=0.02, weight_decay=0.0):
+        if self.lora_config and self.lora_config.is_enabled():
+            if not gather_lora_parameters(self):
+                raise ValueError("LoRA configuration enabled but no adapters were injected")
+            freeze_non_lora_parameters(self, self.lora_config)
+            trainable_params = [p for p in self.parameters() if p.requires_grad]
+            if not trainable_params:
+                raise ValueError("LoRA configuration leaves no trainable parameters")
+            adamw_kwargs = dict(
+                lr=self.lora_config.lora_lr,
+                betas=self.lora_config.betas,
+                eps=self.lora_config.eps,
+                weight_decay=self.lora_config.lora_weight_decay,
+            )
+            try:
+                optimizer = torch.optim.AdamW(trainable_params, fused=True, **adamw_kwargs)
+            except TypeError:
+                optimizer = torch.optim.AdamW(trainable_params, **adamw_kwargs)
+            for group in optimizer.param_groups:
+                group["initial_lr"] = group["lr"]
+            return [optimizer]
+
         model_dim = self.config.n_embd
         ddp, rank, local_rank, world_size = get_dist_info()
         # Separate out all parameters into 3 groups (matrix, embedding, lm_head)
@@ -255,6 +291,35 @@ class GPT(nn.Module):
             for group in opt.param_groups:
                 group["initial_lr"] = group["lr"]
         return optimizers
+
+    def has_lora(self) -> bool:
+        return bool(self.lora_config and self.lora_config.is_enabled() and gather_lora_parameters(self))
+
+    def enable_lora(self, config: LoRAConfig) -> None:
+        if self.has_lora():
+            return
+        self.lora_config = config
+        replaced = inject_lora_adapters(self, config)
+        if not replaced:
+            raise ValueError("LoRA configuration did not match any modules")
+
+    def merge_lora(self) -> None:
+        if self.has_lora():
+            merge_lora_weights(self)
+
+    def unmerge_lora(self) -> None:
+        if self.has_lora():
+            unmerge_lora_weights(self)
+
+    def get_lora_state_dict(self) -> dict:
+        if not self.has_lora():
+            return {}
+        return lora_state_dict(self)
+
+    def load_lora_state_dict(self, state: dict) -> None:
+        if not state:
+            return
+        load_lora_state_dict(self, state)
 
     def forward(self, idx, targets=None, kv_cache=None, loss_reduction='mean'):
         B, T = idx.size()

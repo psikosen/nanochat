@@ -8,6 +8,7 @@ Then open http://localhost:8000 in your browser.
 import argparse
 import json
 import os
+from pathlib import Path
 import torch
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -16,9 +17,10 @@ from fastapi.responses import StreamingResponse, HTMLResponse, FileResponse
 from pydantic import BaseModel
 from typing import List, Optional, AsyncGenerator
 
-from nanochat.common import compute_init
+from nanochat.common import compute_init, get_base_dir
 from nanochat.checkpoint_manager import load_model
 from nanochat.engine import Engine
+from nanochat.adapter_registry import AdapterRegistry
 
 parser = argparse.ArgumentParser(description='NanoChat Web Server')
 parser.add_argument('-i', '--source', type=str, default="sft", help="Source of the model: sft|mid|rl")
@@ -29,6 +31,7 @@ parser.add_argument('-g', '--model-tag', type=str, default=None, help='Model tag
 parser.add_argument('-s', '--step', type=int, default=None, help='Step to load')
 parser.add_argument('-p', '--port', type=int, default=8000, help='Port to run the server on')
 parser.add_argument('--host', type=str, default='0.0.0.0', help='Host to bind the server to')
+parser.add_argument('--adapters-dir', type=str, default=None, help='Directory for storing LoRA adapters')
 args = parser.parse_args()
 
 ddp, ddp_rank, ddp_local_rank, ddp_world_size, device = compute_init()
@@ -45,12 +48,19 @@ class ChatRequest(BaseModel):
     top_k: Optional[int] = None
     stream: Optional[bool] = True
 
+class AdapterSelection(BaseModel):
+    name: str
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Load model on startup."""
     print("Loading nanochat model...")
     app.state.model, app.state.tokenizer, _ = load_model(args.source, device, phase="eval", model_tag=args.model_tag, step=args.step)
     app.state.engine = Engine(app.state.model, app.state.tokenizer)
+    adapter_root = Path(args.adapters_dir) if args.adapters_dir else Path(get_base_dir()) / "adapters"
+    app.state.adapter_registry = AdapterRegistry(adapter_root)
+    app.state.active_adapter = None
+    app.state.base_lora_state = app.state.model.get_lora_state_dict() if app.state.model.has_lora() else {}
     print(f"Server ready at http://localhost:{args.port}")
     yield
 
@@ -190,6 +200,44 @@ async def health():
         "status": "ok",
         "ready": hasattr(app.state, 'model') and app.state.model is not None
     }
+
+
+def _serialize_adapter(metadata):
+    payload = metadata.to_json()
+    if metadata.path:
+        payload["path"] = str(metadata.path)
+    return payload
+
+
+@app.get("/adapters")
+async def adapters():
+    registry = app.state.adapter_registry
+    adapter_list = [_serialize_adapter(meta) for meta in registry.list_adapters()]
+    return {"adapters": adapter_list, "active": app.state.active_adapter}
+
+
+@app.post("/adapters/load")
+async def load_adapter(selection: AdapterSelection):
+    model = app.state.model
+    registry = app.state.adapter_registry
+    base_state = app.state.base_lora_state or {}
+    if base_state:
+        model.load_lora_state_dict(base_state)
+    metadata, base = registry.load(model, selection.name)
+    app.state.base_lora_state = base or app.state.base_lora_state
+    app.state.active_adapter = metadata.name
+    return {"status": "loaded", "adapter": _serialize_adapter(metadata)}
+
+
+@app.post("/adapters/unload")
+async def unload_adapter():
+    model = app.state.model
+    base_state = app.state.base_lora_state or {}
+    if base_state:
+        model.load_lora_state_dict(base_state)
+    model.unmerge_lora()
+    app.state.active_adapter = None
+    return {"status": "unloaded"}
 
 if __name__ == "__main__":
     import uvicorn
