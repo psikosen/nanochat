@@ -37,6 +37,9 @@ class ARC(Task):
         conversation = {
             "messages": messages,
             "letters": letters, # useful during evaluation, so we can narrow and clamp the assistant prediction to one of the letters
+            "question": question,
+            "choices": choices,
+            "answer": answer_string,
         }
         return conversation
 

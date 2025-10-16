@@ -14,6 +14,17 @@
             box-sizing: border-box;
         }
 
+        .sr-only {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            border: 0;
+        }
+
         body {
             font-family: ui-sans-serif, -apple-system, system-ui, "Segoe UI", Helvetica, "Apple Color Emoji", Arial, sans-serif, "Segoe UI Emoji", "Segoe UI Symbol";
             background-color: #ffffff;
@@ -27,12 +38,69 @@
         .header {
             background-color: #ffffff;
             padding: 1.25rem 1.5rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 1.5rem;
+            flex-wrap: wrap;
         }
 
         .header-left {
             display: flex;
             align-items: center;
             gap: 0.75rem;
+        }
+
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+
+        .adapter-select {
+            min-width: 12rem;
+            padding: 0.45rem 0.75rem;
+            border: 1px solid #d1d5db;
+            border-radius: 0.5rem;
+            background-color: #ffffff;
+            color: #111827;
+        }
+
+        .adapter-button {
+            padding: 0.45rem 0.85rem;
+            border-radius: 0.5rem;
+            border: 1px solid #111827;
+            background-color: #111827;
+            color: #ffffff;
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: background-color 0.2s ease, color 0.2s ease;
+        }
+
+        .adapter-button.secondary {
+            background-color: #f9fafb;
+            color: #111827;
+        }
+
+        .adapter-button:disabled {
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
+
+        .adapter-metrics {
+            padding: 0 1.5rem 0.75rem;
+            font-size: 0.9rem;
+            color: #4b5563;
+        }
+
+        .adapter-metrics strong {
+            color: #111827;
+        }
+
+        .adapter-status {
+            font-weight: 600;
+            color: #111827;
         }
 
         .header-logo {
@@ -220,7 +288,15 @@
             </button>
             <h1>nanochat</h1>
         </div>
+        <div class="header-right">
+            <label for="adapterSelect" class="sr-only">Adapter</label>
+            <select id="adapterSelect" class="adapter-select"></select>
+            <button id="loadAdapterButton" class="adapter-button" onclick="applyAdapter()">Load</button>
+            <button id="unloadAdapterButton" class="adapter-button secondary" onclick="unloadAdapter()">Unload</button>
+        </div>
     </div>
+
+    <div class="adapter-metrics" id="adapterMetrics"></div>
 
     <div class="chat-container" id="chatContainer">
         <div class="chat-wrapper" id="chatWrapper">
@@ -252,9 +328,15 @@
         const chatWrapper = document.getElementById('chatWrapper');
         const chatInput = document.getElementById('chatInput');
         const sendButton = document.getElementById('sendButton');
+        const adapterSelect = document.getElementById('adapterSelect');
+        const adapterMetrics = document.getElementById('adapterMetrics');
+        const adapterLoadButton = document.getElementById('loadAdapterButton');
+        const adapterUnloadButton = document.getElementById('unloadAdapterButton');
 
         let messages = [];
         let isGenerating = false;
+        let adapterState = [];
+        let activeAdapter = null;
 
         chatInput.addEventListener('input', function() {
             this.style.height = 'auto';
@@ -278,6 +360,111 @@
                 }
             }
         });
+
+        adapterSelect.addEventListener('change', updateAdapterUI);
+
+        function renderAdapterMetrics(metadata) {
+            if (!metadata) {
+                adapterMetrics.innerHTML = '<span class="adapter-status">Active: Base model</span>';
+                return;
+            }
+            const entries = Object.entries(metadata.metrics || {});
+            const metricsSummary = entries.length
+                ? `<div>${entries.map(([key, value]) => `<span><strong>${key}</strong>: ${Number(value).toFixed(3)}</span>`).join(' • ')}</div>`
+                : '';
+            const created = metadata.created_at ? new Date(metadata.created_at).toLocaleString() : '';
+            const description = metadata.description ? `<div>${metadata.description}</div>` : '';
+            const createdText = created ? `<div>Created ${created}</div>` : '';
+            adapterMetrics.innerHTML = `
+                <div class="adapter-status">Active: ${activeAdapter || 'Base model'}</div>
+                ${description}
+                ${createdText}
+                ${metricsSummary}
+            `;
+        }
+
+        function updateAdapterUI() {
+            const selected = adapterSelect.value;
+            const target = adapterState.find(adapter => adapter.name === (activeAdapter || selected));
+            adapterLoadButton.disabled = isGenerating || !selected || selected === activeAdapter;
+            adapterUnloadButton.disabled = isGenerating || !activeAdapter;
+            renderAdapterMetrics(target);
+        }
+
+        async function refreshAdapters() {
+            try {
+                const response = await fetch(`${API_URL}/adapters`);
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                const data = await response.json();
+                adapterState = data.adapters || [];
+                activeAdapter = data.active || null;
+                adapterSelect.innerHTML = '';
+                if (adapterState.length === 0) {
+                    const option = document.createElement('option');
+                    option.value = '';
+                    option.textContent = 'No adapters available';
+                    adapterSelect.appendChild(option);
+                    adapterSelect.disabled = true;
+                } else {
+                    adapterSelect.disabled = false;
+                    adapterState.forEach(adapter => {
+                        const option = document.createElement('option');
+                        option.value = adapter.name;
+                        option.textContent = adapter.name;
+                        adapterSelect.appendChild(option);
+                    });
+                    if (activeAdapter && adapterState.some(adapter => adapter.name === activeAdapter)) {
+                        adapterSelect.value = activeAdapter;
+                    } else {
+                        adapterSelect.selectedIndex = 0;
+                    }
+                }
+                updateAdapterUI();
+            } catch (error) {
+                adapterMetrics.innerHTML = `<div class="error-message">Adapter registry unavailable: ${error.message}</div>`;
+                adapterSelect.disabled = true;
+                adapterLoadButton.disabled = true;
+                adapterUnloadButton.disabled = true;
+            }
+        }
+
+        async function applyAdapter() {
+            const name = adapterSelect.value;
+            if (!name) {
+                return;
+            }
+            adapterLoadButton.disabled = true;
+            adapterMetrics.innerHTML = '<div class="adapter-status">Loading adapter...</div>';
+            try {
+                const response = await fetch(`${API_URL}/adapters/load`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name })
+                });
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                await refreshAdapters();
+            } catch (error) {
+                adapterMetrics.innerHTML = `<div class="error-message">Failed to load adapter: ${error.message}</div>`;
+            }
+        }
+
+        async function unloadAdapter() {
+            adapterUnloadButton.disabled = true;
+            try {
+                const response = await fetch(`${API_URL}/adapters/unload`, { method: 'POST' });
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                activeAdapter = null;
+                await refreshAdapters();
+            } catch (error) {
+                adapterMetrics.innerHTML = `<div class="error-message">Failed to unload adapter: ${error.message}</div>`;
+            }
+        }
 
         function newConversation() {
             messages = [];
@@ -309,6 +496,7 @@
             if (!message || isGenerating) return;
 
             isGenerating = true;
+            updateAdapterUI();
             chatInput.value = '';
             chatInput.style.height = 'auto';
             sendButton.disabled = true;
@@ -372,6 +560,7 @@
             } finally {
                 isGenerating = false;
                 sendButton.disabled = !chatInput.value.trim();
+                updateAdapterUI();
             }
         }
 
@@ -379,6 +568,8 @@
 
         // Autofocus the chat input on page load
         chatInput.focus();
+
+        refreshAdapters();
 
         fetch(`${API_URL}/health`)
             .then(response => response.json())
